@@ -8,7 +8,7 @@ from langchain_openai import AzureChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from langgraph.prebuilt.chat_agent_executor import AgentState
 from pydantic import BaseModel
-
+from langgraph.checkpoint.memory import MemorySaver
 from model_configurations import get_model_configuration
 
 gpt_chat_version = "gpt-4o"
@@ -36,21 +36,23 @@ def get_chat_model():
 
 
 @tool
-def get_holidays_by_country_code_and_year(
-    country_code="TW", year=2024
+def get_holidays_by_country_code_and_year_and_month(
+    country_code="TW", year=2024, month=10
 ) -> list[dict[str, str]]:
-    """Get holiday list by country code and year
+    """Get holiday list by country code, year, and month
     Args:
         country_code (str): Country code in ISO 3166-1 alpha-2 format
         year (int): Year in YYYY format
+        month (int): Month in MM format
     Returns:
         list[dict[str, str]]: List of holidays with date and name
     """
     api_key = os.environ.get("CALENDARIFIC_API_KEY")
 
     # Mock data if no API key provided
+    holidays_full_list = []
     if not api_key:
-        return [
+        holidays_full_list = [
             {"date": "2024-01-01", "name": "Republic Day/New Year's Day"},
             {"date": "2024-02-04", "name": "Farmer's Day"},
             {"date": "2024-02-08", "name": "Lunar New Year Holiday"},
@@ -106,20 +108,22 @@ def get_holidays_by_country_code_and_year(
             {"date": "2024-12-25", "name": "Constitution Day"},
             {"date": "2024-12-25", "name": "Christmas Day"},
         ]
-
-    response = requests.get(
-        f"https://calendarific.com/api/v2/holidays",
-        params={"api_key": api_key, "country": country_code, "year": year},
-    )
-    response.raise_for_status()
-    holidays_full_list = response.json().get("response", {}).get("holidays", [])
+    else:
+        response = requests.get(
+            f"https://calendarific.com/api/v2/holidays",
+            params={"api_key": api_key, "country": country_code, "year": year},
+        )
+        response.raise_for_status()
+        holidays_full_list = response.json().get("response", {}).get("holidays", [])
     holidays_list = []
     for item in holidays_full_list:
         clean_item = {
-            "date": item.get("date").get("iso"),
+            # some date will contain time, drop it
+            "date": item.get("date").get("iso")[:10],
             "name": item.get("name"),
         }
-        holidays_list.append(clean_item)
+        if int(clean_item["date"][5:7]) == month:
+            holidays_list.append(clean_item)
     return holidays_list
 
 
@@ -173,7 +177,7 @@ def generate_hw01(question):
 
 def generate_hw02(question):
     model = get_chat_model()
-    tools = [get_holidays_by_country_code_and_year]
+    tools = [get_holidays_by_country_code_and_year_and_month]
 
     def _modify_state_messages(state: AgentState):
         prompt_template = get_holiday_list_prompt()
@@ -186,7 +190,10 @@ def generate_hw02(question):
         response_format=HolidayResponse,
     )
 
-    result = app.invoke({"messages": [("human", question)]})
+    result = app.invoke(
+        {"messages": [("human", question)]},
+        stream_mode="updates",
+    )
     return result.model_dump_json()
 
 
